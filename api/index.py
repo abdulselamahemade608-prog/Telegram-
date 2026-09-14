@@ -14,7 +14,7 @@ from telebot import types
 
 TOKEN = os.environ.get("BOT_TOKEN", "PASTE_YOUR_NEW_BOT_TOKEN_HERE")
 
-ADMIN_IDS = [7975950709, 7725001366]
+ADMIN_IDS = [7975950709]
 
 # New required channel
 CHANNELS = ["@arefa_felafl3"]
