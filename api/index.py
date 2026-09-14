@@ -173,7 +173,7 @@ def broadcast(message):
     txt = message.text.replace("/broadcast", "").strip()
     if not txt: return
     for u in all_users:
-        try: bot.send_message(u, f"📢 <b>Announcement:</b>\n\n{txt}", parse_mode="HTML")
+        try: bot.send_message(u, f"📢 <b>Announcement:</b>\n\n{txt}")
         except Exception: continue
     bot.send_message(message.chat.id, "✅ Broadcast done.", parse_mode="HTML")
 
