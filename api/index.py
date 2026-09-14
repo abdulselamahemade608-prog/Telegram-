@@ -4,6 +4,7 @@ from telebot import types
 import datetime
 import time
 
+# --- 1. CONFIGURATION ---
 TOKEN = "8780297991:AAG-gdcWtv8QzxqE7lpM9A2tawwK6UAGDQo"
 ADMIN_IDS = [7975950709, 7725001366] 
 CHANNELS = ["@Felafel_arafa"]
@@ -11,7 +12,7 @@ CHANNELS = ["@Felafel_arafa"]
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- DATABASE (ማስታወሻ፡ ቨርሰል serverless ስለሆነ ዳታ በየጊዜው ሊጠፋ ይችላል) ---
+# --- 2. DATABASE (Memory-based) ---
 prices = {"super": 150, "special": 100, "normal": 50}
 delivery_guys = [] 
 bank_accounts = {
@@ -24,6 +25,7 @@ orders_db = {}
 user_spam = {} 
 active_delivery_msgs = {} 
 
+# --- 3. HELPER FUNCTIONS ---
 def is_subscribed(u_id):
     for ch in CHANNELS:
         try:
@@ -40,6 +42,7 @@ def is_blocked(u_id):
             return True
     return False
 
+# --- 4. MAIN MENU ---
 @bot.message_handler(commands=['start'])
 def start(message):
     all_users.add(message.chat.id)
@@ -68,10 +71,14 @@ def main_menu(message):
     markup.add("Developer")
     bot.send_message(message.chat.id, "<b>Welcome! Select your order:</b>", reply_markup=markup, parse_mode="HTML")
 
+# --- 5. ORDER PROCESS ---
 @bot.message_handler(func=lambda m: m.text in ["Normal Ertib", "Special Ertib", "Super Ertib"])
 def choice_usage(message):
     if not is_subscribed(message.from_user.id):
         bot.send_message(message.chat.id, "❌ <b>Please join the channel first! /start</b>", parse_mode="HTML")
+        return
+    if not sales_status["is_open"]:
+        bot.send_message(message.chat.id, f"⚠️ <b>Shop is Closed.</b>\nReason: {sales_status['reason']}", parse_mode="HTML")
         return
     
     item = "super" if "Super" in message.text else "special" if "Special" in message.text else "normal"
@@ -104,11 +111,11 @@ def process_pay(message, item, usage):
         bot.send_message(message.chat.id, banks_text, reply_markup=types.ReplyKeyboardRemove(), parse_mode="HTML")
         bot.register_next_step_handler(message, final_submit, item, qty, total, usage)
     except Exception:
-        bot.send_message(message.chat.id, "❌ Enter a number!")
+        bot.send_message(message.chat.id, "❌ Enter a number!", parse_mode="HTML")
 
 def final_submit(message, item, qty, total, usage):
     if message.content_type != 'photo':
-        bot.send_message(message.chat.id, "❌ Please send a screenshot.")
+        bot.send_message(message.chat.id, "❌ Please send a screenshot.", parse_mode="HTML")
         return
     
     u_id = message.from_user.id
@@ -126,6 +133,82 @@ def final_submit(message, item, qty, total, usage):
         except Exception: continue
     bot.send_message(u_id, "✅ <b>Sent! Waiting for admin confirmation...</b>", parse_mode="HTML")
 
+# --- 6. ADMIN COMMANDS ---
+@bot.message_handler(commands=['start_sales'])
+def open_shop(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    sales_status["is_open"] = True
+    bot.send_message(message.chat.id, "✅ <b>Sales started.</b>", parse_mode="HTML")
+
+@bot.message_handler(commands=['stop_sales'])
+def close_shop(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    msg = bot.send_message(message.chat.id, "<b>Why are you closing? (Reason):</b>", parse_mode="HTML")
+    bot.register_next_step_handler(msg, save_stop_reason)
+
+def save_stop_reason(message):
+    sales_status["is_open"] = False
+    sales_status["reason"] = message.text
+    bot.send_message(message.chat.id, f"🚫 <b>Closed: {message.text}</b>", parse_mode="HTML")
+
+@bot.message_handler(commands=['report'])
+def get_report(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    rep = f"📊 <b>Report</b>\n\n💰 Sales: {daily_report['total_sales']} ETB\n📦 Orders: {daily_report['orders_count']}"
+    bot.send_message(message.chat.id, rep, parse_mode="HTML")
+
+@bot.message_handler(commands=['to_user'])
+def send_private(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    try:
+        _, t_id, txt = message.text.split(" ", 2)
+        bot.send_message(t_id, f"✉️ <b>Admin Message:</b>\n\n{txt}", parse_mode="HTML")
+        bot.send_message(message.chat.id, "✅ Sent.", parse_mode="HTML")
+    except Exception:
+        bot.send_message(message.chat.id, "Use: /to_user [ID] [Msg]", parse_mode="HTML")
+
+@bot.message_handler(commands=['broadcast'])
+def broadcast(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    txt = message.text.replace("/broadcast", "").strip()
+    if not txt: return
+    for u in all_users:
+        try: bot.send_message(u, f"📢 <b>Announcement:</b>\n\n{txt}", parse_mode="HTML")
+        except Exception: continue
+    bot.send_message(message.chat.id, "✅ Broadcast done.", parse_mode="HTML")
+
+@bot.message_handler(commands=['set_price'])
+def set_price(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    try:
+        _, item, price = message.text.split()
+        if item.lower() in prices:
+            prices[item.lower()] = int(price)
+            bot.send_message(message.chat.id, f"✅ {item} price set to {price}", parse_mode="HTML")
+    except Exception:
+        bot.send_message(message.chat.id, "Use: /set_price [normal/special/super] [price]", parse_mode="HTML")
+
+@bot.message_handler(commands=['add_bank'])
+def add_bank(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    try:
+        _, name, acc, owner = message.text.split(" ", 3)
+        bank_accounts[name.lower()] = {"name": name, "acc": acc, "owner": owner}
+        bot.send_message(message.chat.id, f"✅ Bank {name} added.", parse_mode="HTML")
+    except Exception:
+        bot.send_message(message.chat.id, "Use: /add_bank [Name] [Acc] [Owner]", parse_mode="HTML")
+
+@bot.message_handler(commands=['add_delivery'])
+def add_delivery(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    try:
+        d_id = int(message.text.split()[1])
+        delivery_guys.append(d_id)
+        bot.send_message(message.chat.id, "✅ Delivery guy added.", parse_mode="HTML")
+    except Exception:
+        bot.send_message(message.chat.id, "Use: /add_delivery [ID]", parse_mode="HTML")
+
+# --- 7. CALLBACKS ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_calls(call):
     data = call.data.split("_")
@@ -157,39 +240,16 @@ def handle_calls(call):
         u_id = int(data[1])
         bot.send_message(u_id, "❌ <b>Sorry, order rejected or sold out.</b>", parse_mode="HTML")
 
-# --- VERCEL FLASK WEBHOOK ROUTES ---
-@app.route('/', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
-    return 'Forbidden', 403
-
-@app.route('/', methods=['GET'])
-def index():
+# --- 8. VERCEL FLASK WEBHOOK ROUTES ---
+@app.route('/', defaults={'path': ''}, methods=['POST', 'GET'])
+@app.route('/<path:path>', methods=['POST', 'GET'])
+def catch_all(path):
+    if request.method == 'POST':
+        if request.headers.get('content-type') == 'application/json':
+            json_string = request.get_data().decode('utf-8')
+            update = telebot.types.Update.de_json(json_string)
+            bot.process_new_updates([update])
+            return '', 200
+        return 'Invalid content type', 400
     return 'Bot is active and running via Webhook!'
-
-
-
-
-# --- VERCEL FLASK WEBHOOK ROUTES ---
-@app.route('/', methods=['POST'])
-@app.route('/api', methods=['POST'])
-@app.route('/api/index', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
-    return 'Forbidden', 403
-
-@app.route('/', methods=['GET'])
-@app.route('/api', methods=['GET'])
-@app.route('/api/index', methods=['GET'])
-def index():
-    return 'Bot is active and running via Webhook!'
-    
-      
+        
