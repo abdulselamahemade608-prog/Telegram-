@@ -1,231 +1,250 @@
+"""
+AREFA FOOD ORDERING BOT - IMPROVED VERSION
+A complete Telegram bot for managing food orders with admin controls, delivery tracking, and payment integration
+"""
 
 import os
 import time
 import datetime
-
+import json
 from flask import Flask, request
 import telebot
 from telebot import types
 
-
 # =========================================================
-# 1. CONFIGURATION
+# 1. CONFIGURATION & CONSTANTS
 # =========================================================
 
-TOKEN = os.environ.get("BOT_TOKEN", "PASTE_YOUR_NEW_BOT_TOKEN_HERE")
-
-ADMIN_IDS = [7975950709]
-
-# New required channel
+TOKEN = os.environ.get("BOT_TOKEN", "PASTE_YOUR_BOT_TOKEN_HERE")
+ADMIN_IDS = [7975950709, 7725001366]
 CHANNELS = ["@arefa_felafl3"]
-
 CHANNEL_URL = "https://t.me/arefa_felafl3"
+
+# =========================================================
+# 2. BOT & APP INITIALIZATION
+# =========================================================
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-
 # =========================================================
-# 2. DATABASE (MEMORY-BASED)
-# =========================================================
-
-prices = {
-    "super": 150,
-    "special": 100,
-    "normal": 50
-}
-
-delivery_guys = []
-
-bank_accounts = {
-    "telebirr": {
-        "name": "Telebirr",
-        "acc": "0947745262",
-        "owner": "Kamil"
-    }
-}
-
-sales_status = {
-    "is_open": True,
-    "reason": ""
-}
-
-daily_report = {
-    "total_sales": 0,
-    "orders_count": 0
-}
-
-all_users = set()
-orders_db = {}
-user_spam = {}
-active_delivery_msgs = {}
-
-
-# =========================================================
-# 3. BUTTON LABELS
+# 3. DATABASE (MEMORY-BASED WITH OPTIONAL PERSISTENCE)
 # =========================================================
 
-# Success-style buttons
-BTN_NORMAL = "✅ Normal Ertib"
-BTN_SPECIAL = "✅ Special Ertib"
-BTN_SUPER = "✅ Super Ertib"
+class Database:
+    """Centralized database management"""
+    
+    def __init__(self):
+        self.prices = {
+            "super": 150,
+            "special": 100,
+            "normal": 50
+        }
+        
+        self.delivery_guys = []
+        
+        self.bank_accounts = {
+            "telebirr": {
+                "name": "Telebirr",
+                "acc": "0947745262",
+                "owner": "Kamil"
+            }
+        }
+        
+        self.sales_status = {
+            "is_open": True,
+            "reason": ""
+        }
+        
+        self.daily_report = {
+            "total_sales": 0,
+            "orders_count": 0,
+            "date": datetime.date.today().isoformat()
+        }
+        
+        self.all_users = set()
+        self.orders_db = {}
+        self.user_spam = {}
+        self.active_delivery_msgs = {}
+    
+    def reset_daily_report(self):
+        """Reset daily report if date changed"""
+        today = datetime.date.today().isoformat()
+        if self.daily_report.get("date") != today:
+            self.daily_report = {
+                "total_sales": 0,
+                "orders_count": 0,
+                "date": today
+            }
+    
+    def add_spam(self, user_id):
+        """Track spam attempts"""
+        current_time = time.time()
+        if user_id not in self.user_spam:
+            self.user_spam[user_id] = (1, current_time)
+        else:
+            count, last_time = self.user_spam[user_id]
+            self.user_spam[user_id] = (count + 1, current_time)
+    
+    def is_spam_blocked(self, user_id):
+        """Check if user is spam blocked"""
+        if user_id not in self.user_spam:
+            return False
+        
+        count, last_time = self.user_spam[user_id]
+        # Block if 5+ attempts in last 48 hours
+        if count >= 5 and (time.time() - last_time) < 172800:
+            return True
+        return False
 
-BTN_DEVELOPER = "ℹ️ Developer"
-BTN_JOINED = "✅ Joined"
-BTN_BACK = "🔙 Back"
-BTN_DELIVERY = "✅ Takeaway (Delivery)"
-BTN_DINEIN = "✅ Dine-in (At Hotel)"
-
-# Danger-style buttons
-BTN_NOT_AVAILABLE = "❌ Not Available"
-BTN_CANCEL = "❌ Cancel"
-BTN_REJECT = "❌ Reject"
-
+db = Database()
 
 # =========================================================
-# 4. HELPER FUNCTIONS
+# 4. BUTTON LABELS & CONSTANTS
 # =========================================================
 
-def is_subscribed(u_id):
-    for ch in CHANNELS:
+class Buttons:
+    """Centralized button labels"""
+    # Order types
+    NORMAL = "✅ Normal Ertib"
+    SPECIAL = "✅ Special Ertib"
+    SUPER = "✅ Super Ertib"
+    
+    # Service types
+    DELIVERY = "✅ Takeaway (Delivery)"
+    DINEIN = "✅ Dine-in (At Hotel)"
+    
+    # Navigation
+    DEVELOPER = "ℹ️ Developer"
+    JOINED = "✅ Joined"
+    BACK = "🔙 Back"
+    
+    # Status
+    AVAILABLE = "✅ Available"
+    NOT_AVAILABLE = "❌ Not Available"
+    CANCEL = "❌ Cancel"
+    REJECT = "❌ Reject"
+
+# =========================================================
+# 5. HELPER FUNCTIONS
+# =========================================================
+
+def is_subscribed(user_id):
+    """Check if user is subscribed to required channel"""
+    for channel in CHANNELS:
         try:
-            status = bot.get_chat_member(ch, u_id).status
-
+            status = bot.get_chat_member(channel, user_id).status
             if status in ["left", "kicked"]:
                 return False
-
-        except Exception:
+        except Exception as e:
+            print(f"Error checking subscription: {e}")
             return False
-
     return True
 
+def is_admin(user_id):
+    """Check if user is admin"""
+    return user_id in ADMIN_IDS
 
-def is_blocked(u_id):
-    if u_id in user_spam:
-        count, last_t = user_spam[u_id]
+def create_success_button(text, callback_data):
+    """Create a success-style inline button"""
+    return types.InlineKeyboardButton(f"✅ {text}", callback_data=callback_data)
 
-        if count >= 5 and (time.time() - last_t) < 172800:
-            return True
+def create_danger_button(text, callback_data):
+    """Create a danger-style inline button"""
+    return types.InlineKeyboardButton(f"❌ {text}", callback_data=callback_data)
 
-    return False
-
-
-def admin_only(message):
-    return message.from_user.id in ADMIN_IDS
-
-
-def success_button(text, callback_data):
-    return types.InlineKeyboardButton(
-        f"✅ {text}",
-        callback_data=callback_data
+def get_order_summary(order, user_id):
+    """Generate order summary text"""
+    return (
+        f"🔔 <b>New Order!</b>\n"
+        f"👤 User ID: <code>{user_id}</code>\n"
+        f"📦 Item: {order['item'].capitalize()} x{order['qty']}\n"
+        f"💰 Total: {order['total']} ETB\n"
+        f"🍽 Service: {order['usage']}\n"
+        f"⏰ Time: {order['time'].strftime('%H:%M')}"
     )
-
-
-def danger_button(text, callback_data):
-    return types.InlineKeyboardButton(
-        f"❌ {text}",
-        callback_data=callback_data
-    )
-
 
 # =========================================================
-# 5. MAIN MENU
+# 6. MAIN MENU & START COMMAND
 # =========================================================
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    all_users.add(message.chat.id)
-
-    if is_blocked(message.from_user.id):
+    """Handle /start command"""
+    user_id = message.from_user.id
+    db.all_users.add(user_id)
+    
+    # Check if user is blocked
+    if db.is_spam_blocked(user_id):
         bot.send_message(
             message.chat.id,
-            "❌ <b>Blocked: Too many invalid attempts. "
-            "Try again in 48h.</b>",
+            "❌ <b>Blocked: Too many invalid attempts.</b>\n"
+            "Try again in 48 hours.",
             parse_mode="HTML"
         )
         return
-
-    if not is_subscribed(message.from_user.id):
-
+    
+    # Check subscription
+    if not is_subscribed(user_id):
         markup = types.InlineKeyboardMarkup()
-
-        join_btn = types.InlineKeyboardButton(
-            "📢 Join Channel",
-            url=CHANNEL_URL
-        )
-
-        check_btn = types.InlineKeyboardButton(
-            BTN_JOINED,
-            callback_data="check_sub"
-        )
-
-        markup.add(join_btn)
-        markup.add(check_btn)
-
+        markup.add(types.InlineKeyboardButton("📢 Join Channel", url=CHANNEL_URL))
+        markup.add(types.InlineKeyboardButton(Buttons.JOINED, callback_data="check_sub"))
+        
         bot.send_message(
             message.chat.id,
-            "<b>Welcome!</b>\n\n"
+            "<b>Welcome! 🎉</b>\n\n"
             "Please join our channel first to use this bot.",
             reply_markup=markup,
             parse_mode="HTML"
         )
+        return
+    
+    # User is subscribed, show main menu
+    show_main_menu(message)
 
-    else:
-        main_menu(message)
-
-
-def main_menu(message):
-    markup = types.ReplyKeyboardMarkup(
-        resize_keyboard=True
-    )
-
-    markup.add(
-        BTN_NORMAL,
-        BTN_SPECIAL,
-        BTN_SUPER
-    )
-
-    markup.add(BTN_DEVELOPER)
-
+def show_main_menu(message):
+    """Display main menu"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(Buttons.NORMAL, Buttons.SPECIAL, Buttons.SUPER)
+    markup.add(Buttons.DEVELOPER)
+    
     bot.send_message(
         message.chat.id,
-        "<b>Welcome! Select your order:</b>",
+        "<b>🍽 Welcome! Select Your Order:</b>\n\n"
+        "Choose your preferred Ertib type:",
         reply_markup=markup,
         parse_mode="HTML"
     )
 
-
 # =========================================================
-# 6. DEVELOPER BUTTON
+# 7. DEVELOPER INFO
 # =========================================================
 
-@bot.message_handler(
-    func=lambda m: m.text == BTN_DEVELOPER
-)
+@bot.message_handler(func=lambda m: m.text == Buttons.DEVELOPER)
 def developer_info(message):
+    """Send developer information"""
     bot.send_message(
         message.chat.id,
-        "<b>Developer Information</b>\n\n"
+        "<b>👨‍💻 Developer Information</b>\n\n"
         "Bot Developer: ABDU\n"
-        "Telegram: @Abdu_your_owner",
+        "Telegram: @Abdu_your_owner\n\n"
+        "<i>For support or inquiries, contact the developer.</i>",
         parse_mode="HTML"
     )
 
-
 # =========================================================
-# 7. ORDER PROCESS
+# 8. ORDER PROCESS
 # =========================================================
 
 @bot.message_handler(
-    func=lambda m: m.text in [
-        BTN_NORMAL,
-        BTN_SPECIAL,
-        BTN_SUPER
-    ]
+    func=lambda m: m.text in [Buttons.NORMAL, Buttons.SPECIAL, Buttons.SUPER]
 )
-def choice_usage(message):
-
-    if not is_subscribed(message.from_user.id):
+def process_order_type(message):
+    """Handle order type selection"""
+    user_id = message.from_user.id
+    
+    # Verify subscription
+    if not is_subscribed(user_id):
         bot.send_message(
             message.chat.id,
             "❌ <b>Please join the channel first!</b>\n"
@@ -233,56 +252,49 @@ def choice_usage(message):
             parse_mode="HTML"
         )
         return
-
-    if not sales_status["is_open"]:
+    
+    # Check shop status
+    if not db.sales_status["is_open"]:
         bot.send_message(
             message.chat.id,
-            f"⚠️ <b>Shop is Closed.</b>\n"
-            f"Reason: {sales_status['reason']}",
+            f"⚠️ <b>Shop is Closed</b>\n"
+            f"Reason: {db.sales_status['reason']}",
             parse_mode="HTML"
         )
         return
-
+    
+    # Determine item type
     if "Super" in message.text:
         item = "super"
     elif "Special" in message.text:
         item = "special"
     else:
         item = "normal"
-
-    markup = types.ReplyKeyboardMarkup(
-        resize_keyboard=True
-    )
-
-    markup.add(
-        BTN_DELIVERY,
-        BTN_DINEIN
-    )
-
-    markup.add(BTN_BACK)
-
+    
+    # Ask for service type
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(Buttons.DELIVERY, Buttons.DINEIN)
+    markup.add(Buttons.BACK)
+    
     msg = bot.send_message(
         message.chat.id,
+        f"<b>📦 {item.capitalize()} Ertib Selected</b>\n"
+        f"Price: <b>{db.prices[item]} ETB</b> per unit\n\n"
         "<b>Choose service type:</b>",
         reply_markup=markup,
         parse_mode="HTML"
     )
+    
+    bot.register_next_step_handler(msg, get_quantity, item)
 
-    bot.register_next_step_handler(
-        msg,
-        get_qty,
-        item
-    )
-
-
-def get_qty(message, item):
-
-    if message.text == BTN_BACK:
-        return main_menu(message)
-
-    if message.text == BTN_DELIVERY:
+def get_quantity(message, item):
+    """Get order quantity"""
+    if message.text == Buttons.BACK:
+        return show_main_menu(message)
+    
+    if message.text == Buttons.DELIVERY:
         usage = "Takeaway"
-    elif message.text == BTN_DINEIN:
+    elif message.text == Buttons.DINEIN:
         usage = "Dine-in"
     else:
         bot.send_message(
@@ -290,453 +302,450 @@ def get_qty(message, item):
             "❌ Please select a valid service type."
         )
         return
-
-    markup = types.ReplyKeyboardMarkup(
-        resize_keyboard=True
-    )
-
-    markup.add(BTN_BACK)
-
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(Buttons.BACK)
+    
     msg = bot.send_message(
         message.chat.id,
-        f"<b>How many?</b>\n"
-        f"Price: {prices[item]} ETB each",
+        f"<b>How many units?</b>\n"
+        f"Price per unit: <b>{db.prices[item]} ETB</b>",
         reply_markup=markup,
         parse_mode="HTML"
     )
+    
+    bot.register_next_step_handler(msg, get_payment_details, item, usage)
 
-    bot.register_next_step_handler(
-        msg,
-        process_pay,
-        item,
-        usage
-    )
-
-
-def process_pay(message, item, usage):
-
-    if message.text == BTN_BACK:
-        return main_menu(message)
-
+def get_payment_details(message, item, usage):
+    """Get payment and location details"""
+    if message.text == Buttons.BACK:
+        return show_main_menu(message)
+    
     try:
         qty = int(message.text)
-
         if qty <= 0:
-            raise ValueError
-
-        total = qty * prices[item]
-
-        banks_text = "<b>Payment Details:</b>\n\n"
-
-        for b_id, b_info in bank_accounts.items():
-            banks_text += (
-                f"🏦 {b_info['name']}\n"
-                f"👤 {b_info['owner']}\n"
-                f"🔢 <code>{b_info['acc']}</code>\n\n"
+            raise ValueError("Quantity must be positive")
+        
+        total = qty * db.prices[item]
+        
+        # Prepare payment details
+        payment_text = "<b>💳 Payment Details:</b>\n\n"
+        for bank_id, bank_info in db.bank_accounts.items():
+            payment_text += (
+                f"🏦 <b>{bank_info['name']}</b>\n"
+                f"👤 Owner: {bank_info['owner']}\n"
+                f"🔢 Account: <code>{bank_info['acc']}</code>\n\n"
             )
-
-        banks_text += (
-            f"💰 <b>Total: {total} ETB</b>\n\n"
-            "Send your payment screenshot and location "
-            "in the caption."
+        
+        payment_text += (
+            f"<b>💰 Total Amount: {total} ETB</b>\n\n"
+            f"<b>📸 Instructions:</b>\n"
+            f"1. Send payment screenshot\n"
+            f"2. Include your location in photo caption\n"
+            f"3. Our admin will confirm your order"
         )
-
+        
         msg = bot.send_message(
             message.chat.id,
-            banks_text,
+            payment_text,
             reply_markup=types.ReplyKeyboardRemove(),
             parse_mode="HTML"
         )
-
-        # Wait for the next user message
+        
         bot.register_next_step_handler(
-            msg,
-            final_submit,
-            item,
-            qty,
-            total,
-            usage
+            msg, submit_order, item, qty, total, usage
         )
-
+    
     except (ValueError, TypeError):
+        db.add_spam(message.from_user.id)
         bot.send_message(
             message.chat.id,
-            "❌ <b>Enter a valid number!</b>",
+            "❌ <b>Invalid number!</b>\n"
+            "Please enter a positive integer.",
             parse_mode="HTML"
         )
 
-
 # =========================================================
-# 8. FINAL ORDER SUBMISSION
+# 9. FINAL ORDER SUBMISSION
 # =========================================================
 
-def final_submit(message, item, qty, total, usage):
-
+def submit_order(message, item, qty, total, usage):
+    """Submit and process order"""
     if message.content_type != "photo":
         bot.send_message(
             message.chat.id,
-            "❌ Please send a payment screenshot.\n"
-            "You can include your location in the caption."
+            "❌ <b>Please send a payment screenshot.</b>\n"
+            "You can include your location in the photo caption."
         )
         return
-
-    u_id = message.from_user.id
+    
+    user_id = message.from_user.id
     now = datetime.datetime.now()
-
-    orders_db[u_id] = {
+    
+    # Store order
+    db.orders_db[user_id] = {
         "time": now,
         "total": total,
         "usage": usage,
         "item": item,
         "qty": qty,
         "assigned_to": None,
-        "status": "pending"
+        "status": "pending",
+        "user_name": message.from_user.first_name or "Unknown",
+        "location": message.caption or "No location provided"
     }
-
+    
+    # Prepare admin notification
     caption = (
         f"🔔 <b>New Order!</b>\n"
         f"👤 {message.from_user.first_name}\n"
-        f"🆔 {u_id}\n"
-        f"📦 {item} x{qty}\n"
+        f"🆔 <code>{user_id}</code>\n"
+        f"📦 {item.capitalize()} x{qty}\n"
         f"💰 {total} ETB\n"
         f"🍽 {usage}\n"
         f"📍 {message.caption or 'No location provided'}\n"
         f"⏰ {now.strftime('%H:%M')}"
     )
-
+    
+    # Send to all admins
     markup = types.InlineKeyboardMarkup()
-
     markup.row(
-        success_button(
-            "Available",
-            f"y_{u_id}_{total}"
-        ),
-        danger_button(
-            "Not Available",
-            f"n_{u_id}"
-        )
+        create_success_button("Available", f"y_{user_id}_{total}"),
+        create_danger_button("Not Available", f"n_{user_id}")
     )
-
-    for admin in ADMIN_IDS:
+    
+    for admin_id in ADMIN_IDS:
         try:
             bot.send_photo(
-                admin,
+                admin_id,
                 message.photo[-1].file_id,
                 caption=caption,
                 reply_markup=markup,
                 parse_mode="HTML"
             )
-        except Exception:
-            continue
-
+        except Exception as e:
+            print(f"Error sending to admin {admin_id}: {e}")
+    
+    # Confirm to user
     bot.send_message(
-        u_id,
-        "✅ <b>Order sent!</b>\n"
-        "Waiting for admin confirmation...",
+        user_id,
+        "✅ <b>Order Submitted!</b>\n\n"
+        "Your order has been sent to admin for confirmation.\n"
+        "We will notify you soon.",
         parse_mode="HTML"
     )
 
-
 # =========================================================
-# 9. ADMIN COMMANDS
+# 10. ADMIN COMMANDS
 # =========================================================
 
 @bot.message_handler(commands=["start_sales"])
 def open_shop(message):
-
-    if not admin_only(message):
+    """Admin: Open shop"""
+    if not is_admin(message.from_user.id):
         return
-
-    sales_status["is_open"] = True
-    sales_status["reason"] = ""
-
+    
+    db.sales_status["is_open"] = True
+    db.sales_status["reason"] = ""
+    
     bot.send_message(
         message.chat.id,
-        "✅ <b>Sales started.</b>",
+        "✅ <b>Sales Started!</b>\n"
+        "Shop is now open for orders.",
         parse_mode="HTML"
     )
-
 
 @bot.message_handler(commands=["stop_sales"])
 def close_shop(message):
-
-    if not admin_only(message):
+    """Admin: Close shop with reason"""
+    if not is_admin(message.from_user.id):
         return
-
+    
     msg = bot.send_message(
         message.chat.id,
-        "<b>Why are you closing? (Reason):</b>",
+        "<b>Why are you closing the shop?</b>\n"
+        "Enter the reason:",
         parse_mode="HTML"
     )
+    
+    bot.register_next_step_handler(msg, save_close_reason)
 
-    bot.register_next_step_handler(
-        msg,
-        save_stop_reason
-    )
-
-
-def save_stop_reason(message):
-
-    sales_status["is_open"] = False
-    sales_status["reason"] = message.text or "No reason provided"
-
+def save_close_reason(message):
+    """Save shop closure reason"""
+    db.sales_status["is_open"] = False
+    db.sales_status["reason"] = message.text or "No reason provided"
+    
     bot.send_message(
         message.chat.id,
-        f"🚫 <b>Closed:</b> {sales_status['reason']}",
+        f"🚫 <b>Shop Closed</b>\n"
+        f"Reason: {db.sales_status['reason']}",
         parse_mode="HTML"
     )
-
 
 @bot.message_handler(commands=["report"])
 def get_report(message):
-
-    if not admin_only(message):
+    """Admin: Get daily report"""
+    if not is_admin(message.from_user.id):
         return
-
-    rep = (
-        "📊 <b>Report</b>\n\n"
-        f"💰 Sales: {daily_report['total_sales']} ETB\n"
-        f"📦 Orders: {daily_report['orders_count']}"
+    
+    db.reset_daily_report()
+    
+    report = (
+        "📊 <b>Daily Report</b>\n\n"
+        f"💰 Total Sales: <b>{db.daily_report['total_sales']} ETB</b>\n"
+        f"📦 Orders Count: <b>{db.daily_report['orders_count']}</b>\n"
+        f"📅 Date: {db.daily_report['date']}"
     )
+    
+    bot.send_message(message.chat.id, report, parse_mode="HTML")
 
-    bot.send_message(
-        message.chat.id,
-        rep,
-        parse_mode="HTML"
+@bot.message_handler(commands=["stats"])
+def get_stats(message):
+    """Admin: Get detailed statistics"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    total_users = len(db.all_users)
+    pending_orders = sum(1 for o in db.orders_db.values() if o["status"] == "pending")
+    delivered = sum(1 for o in db.orders_db.values() if o["status"] == "finished")
+    
+    stats = (
+        "📈 <b>Bot Statistics</b>\n\n"
+        f"👥 Total Users: <b>{total_users}</b>\n"
+        f"⏳ Pending Orders: <b>{pending_orders}</b>\n"
+        f"✅ Delivered Orders: <b>{delivered}</b>\n"
+        f"🚚 Delivery Guys: <b>{len(db.delivery_guys)}</b>"
     )
-
+    
+    bot.send_message(message.chat.id, stats, parse_mode="HTML")
 
 @bot.message_handler(commands=["to_user"])
-def send_private(message):
-
-    if not admin_only(message):
+def send_private_message(message):
+    """Admin: Send message to specific user"""
+    if not is_admin(message.from_user.id):
         return
-
+    
     try:
-        _, t_id, txt = message.text.split(" ", 2)
-
+        parts = message.text.split(" ", 2)
+        if len(parts) < 3:
+            raise ValueError("Invalid format")
+        
+        user_id = int(parts[1])
+        text = parts[2]
+        
         bot.send_message(
-            int(t_id),
-            f"✉️ <b>Admin Message:</b>\n\n{txt}",
+            user_id,
+            f"✉️ <b>Admin Message:</b>\n\n{text}",
             parse_mode="HTML"
         )
-
+        
+        bot.send_message(message.chat.id, "✅ Message sent.", parse_mode="HTML")
+    
+    except (ValueError, IndexError):
         bot.send_message(
             message.chat.id,
-            "✅ Sent.",
-            parse_mode="HTML"
+            "❌ <b>Usage:</b>\n/to_user [USER_ID] [MESSAGE]"
         )
-
-    except Exception:
-        bot.send_message(
-            message.chat.id,
-            "Use: /to_user [ID] [Msg]"
-        )
-
 
 @bot.message_handler(commands=["broadcast"])
-def broadcast(message):
-
-    if not admin_only(message):
+def broadcast_message(message):
+    """Admin: Broadcast message to all users"""
+    if not is_admin(message.from_user.id):
         return
-
-    txt = message.text.replace("/broadcast", "").strip()
-
-    if not txt:
+    
+    text = message.text.replace("/broadcast", "").strip()
+    
+    if not text:
         bot.send_message(
             message.chat.id,
-            "Use: /broadcast [Message]"
+            "❌ <b>Usage:</b>\n/broadcast [MESSAGE]"
         )
         return
-
-    for u in all_users:
+    
+    sent_count = 0
+    for user_id in db.all_users:
         try:
             bot.send_message(
-                u,
-                f"📢 <b>Announcement:</b>\n\n{txt}",
+                user_id,
+                f"📢 <b>Announcement:</b>\n\n{text}",
                 parse_mode="HTML"
             )
-        except Exception:
-            continue
-
+            sent_count += 1
+        except Exception as e:
+            print(f"Error sending to {user_id}: {e}")
+    
     bot.send_message(
         message.chat.id,
-        "✅ Broadcast done.",
+        f"✅ Broadcast sent to <b>{sent_count}</b> users.",
         parse_mode="HTML"
     )
-
 
 @bot.message_handler(commands=["set_price"])
 def set_price(message):
-
-    if not admin_only(message):
+    """Admin: Set item price"""
+    if not is_admin(message.from_user.id):
         return
-
+    
     try:
-        _, item, price = message.text.split()
-
-        item = item.lower()
-        price = int(price)
-
-        if item not in prices or price <= 0:
+        parts = message.text.split()
+        if len(parts) < 3:
             raise ValueError
-
-        prices[item] = price
-
+        
+        item = parts[1].lower()
+        price = int(parts[2])
+        
+        if item not in db.prices or price <= 0:
+            raise ValueError
+        
+        db.prices[item] = price
+        
         bot.send_message(
             message.chat.id,
-            f"✅ {item.capitalize()} price set to {price} ETB",
+            f"✅ <b>{item.capitalize()} price updated to {price} ETB</b>",
             parse_mode="HTML"
         )
-
-    except Exception:
+    
+    except (ValueError, IndexError):
         bot.send_message(
             message.chat.id,
-            "Use: /set_price [normal/special/super] [price]"
+            "❌ <b>Usage:</b>\n/set_price [normal/special/super] [price]"
         )
 
-
 @bot.message_handler(commands=["add_bank"])
-def add_bank(message):
-
-    if not admin_only(message):
+def add_bank_account(message):
+    """Admin: Add bank account"""
+    if not is_admin(message.from_user.id):
         return
-
+    
     try:
-        _, name, acc, owner = message.text.split(" ", 3)
-
-        bank_accounts[name.lower()] = {
+        parts = message.text.split(" ", 3)
+        if len(parts) < 4:
+            raise ValueError
+        
+        name = parts[1]
+        acc = parts[2]
+        owner = parts[3]
+        
+        db.bank_accounts[name.lower()] = {
             "name": name,
             "acc": acc,
             "owner": owner
         }
-
+        
         bot.send_message(
             message.chat.id,
-            f"✅ Bank {name} added.",
+            f"✅ <b>Bank '{name}' added successfully.</b>",
             parse_mode="HTML"
         )
-
-    except Exception:
+    
+    except (ValueError, IndexError):
         bot.send_message(
             message.chat.id,
-            "Use: /add_bank [Name] [Acc] [Owner]"
+            "❌ <b>Usage:</b>\n/add_bank [NAME] [ACCOUNT] [OWNER]"
         )
-
 
 @bot.message_handler(commands=["add_delivery"])
-def add_delivery(message):
-
-    if not admin_only(message):
+def add_delivery_guy(message):
+    """Admin: Add delivery person"""
+    if not is_admin(message.from_user.id):
         return
-
+    
     try:
-        d_id = int(message.text.split()[1])
-
-        if d_id not in delivery_guys:
-            delivery_guys.append(d_id)
-
+        delivery_id = int(message.text.split()[1])
+        
+        if delivery_id not in db.delivery_guys:
+            db.delivery_guys.append(delivery_id)
+        
         bot.send_message(
             message.chat.id,
-            "✅ Delivery guy added.",
+            f"✅ <b>Delivery person (ID: {delivery_id}) added.</b>",
             parse_mode="HTML"
         )
-
-    except Exception:
+    
+    except (ValueError, IndexError):
         bot.send_message(
             message.chat.id,
-            "Use: /add_delivery [ID]"
+            "❌ <b>Usage:</b>\n/add_delivery [USER_ID]"
         )
 
+@bot.message_handler(commands=["list_delivery"])
+def list_delivery_guys(message):
+    """Admin: List all delivery persons"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    if not db.delivery_guys:
+        bot.send_message(message.chat.id, "No delivery persons added yet.")
+        return
+    
+    text = "<b>🚚 Delivery Persons:</b>\n\n"
+    for idx, d_id in enumerate(db.delivery_guys, 1):
+        text += f"{idx}. ID: <code>{d_id}</code>\n"
+    
+    bot.send_message(message.chat.id, text, parse_mode="HTML")
 
 # =========================================================
-# 10. CALLBACKS
+# 11. CALLBACK HANDLERS
 # =========================================================
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_calls(call):
+@bot.callback_query_handler(func=lambda call: call.data == "check_sub")
+def check_subscription(call):
+    """Handle subscription check button"""
+    user_id = call.from_user.id
+    
+    if is_subscribed(user_id):
+        bot.answer_callback_query(call.id, "✅ Thank you for joining!")
+        
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        
+        show_main_menu(call.message)
+    
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "❌ You still haven't joined the channel!",
+            show_alert=True
+        )
 
-    data = call.data.split("_")
-    now = datetime.datetime.now()
-
-    # -----------------------------------------------------
-    # JOINED BUTTON
-    # -----------------------------------------------------
-
-    if data[0] == "check_sub":
-
-        if is_subscribed(call.from_user.id):
-
-            bot.answer_callback_query(
-                call.id,
-                "✅ Thank you for joining!"
-            )
-
-            try:
-                bot.delete_message(
-                    call.message.chat.id,
-                    call.message.message_id
-                )
-            except Exception:
-                pass
-
-            main_menu(call.message)
-
-        else:
-            bot.answer_callback_query(
-                call.id,
-                "❌ You still haven't joined the channel!",
-                show_alert=True
-            )
-
-    # -----------------------------------------------------
-    # ADMIN ACCEPTS ORDER
-    # -----------------------------------------------------
-
-    elif data[0] == "y":
-
-        if not admin_only(call.message):
-            bot.answer_callback_query(
-                call.id,
-                "❌ Admin only!",
-                show_alert=True
-            )
-            return
-
-        u_id = int(data[1])
+@bot.callback_query_handler(func=lambda call: call.data.startswith("y_"))
+def admin_accept_order(call):
+    """Handle admin accepting order"""
+    if not is_admin(call.from_user.id):
+        bot.answer_callback_query(
+            call.id,
+            "❌ Admin only!",
+            show_alert=True
+        )
+        return
+    
+    try:
+        data = call.data.split("_")
+        user_id = int(data[1])
         total = int(data[2])
-
-        order = orders_db.get(u_id)
-
+        
+        order = db.orders_db.get(user_id)
+        
         if not order:
-            bot.answer_callback_query(
-                call.id,
-                "❌ Order not found.",
-                show_alert=True
-            )
+            bot.answer_callback_query(call.id, "❌ Order not found.", show_alert=True)
             return
-
-        if order.get("status") != "pending":
+        
+        if order["status"] != "pending":
             bot.answer_callback_query(
                 call.id,
                 "⚠️ Order already processed.",
                 show_alert=True
             )
             return
-
+        
         order["status"] = "accepted"
-
-        usage = order.get("usage", "Dine-in")
-
-        daily_report["total_sales"] += total
-        daily_report["orders_count"] += 1
-
-        bot.answer_callback_query(
-            call.id,
-            "✅ Order accepted!"
-        )
-
-        # Update admin message
+        db.daily_report["total_sales"] += total
+        db.daily_report["orders_count"] += 1
+        
+        bot.answer_callback_query(call.id, "✅ Order accepted!")
+        
         try:
             bot.edit_message_reply_markup(
                 call.message.chat.id,
@@ -745,87 +754,74 @@ def handle_calls(call):
             )
         except Exception:
             pass
-
-        if usage == "Dine-in":
-
+        
+        # Handle based on service type
+        if order["usage"] == "Dine-in":
             markup = types.InlineKeyboardMarkup()
-
-            markup.add(
-                success_button(
-                    "Received",
-                    f"finish_{u_id}"
-                )
-            )
-
+            markup.add(create_success_button("Received", f"finish_{user_id}"))
+            
             bot.send_message(
-                u_id,
+                user_id,
                 f"🎫 <b>Receipt</b>\n"
                 f"💰 Total: {total} ETB\n"
-                f"⏰ Time: {now.strftime('%H:%M')}\n\n"
-                "Show this at the hotel.",
+                f"⏰ Time: {datetime.datetime.now().strftime('%H:%M')}\n\n"
+                "Show this receipt at the hotel counter.",
                 reply_markup=markup,
                 parse_mode="HTML"
             )
-
-        else:
-
+        
+        else:  # Takeaway - find delivery
             bot.send_message(
-                u_id,
-                "🥳 <b>Ertib is Ready!</b>\n"
-                "Finding delivery...",
+                user_id,
+                "🥳 <b>Your Order is Ready!</b>\n"
+                "🚲 Finding delivery driver...",
                 parse_mode="HTML"
             )
-
+            
             markup = types.InlineKeyboardMarkup()
-
-            markup.add(
-                success_button(
-                    "Accept Delivery",
-                    f"t_{u_id}"
-                )
-            )
-
-            for d in delivery_guys:
+            markup.add(create_success_button("Accept Delivery", f"t_{user_id}"))
+            
+            for delivery_id in db.delivery_guys:
                 try:
                     sent = bot.send_message(
-                        d,
-                        f"🚚 <b>New Delivery!</b>\n"
-                        f"{call.message.caption}",
+                        delivery_id,
+                        f"🚚 <b>New Delivery Order!</b>\n\n"
+                        f"📦 Item: {order['item'].capitalize()} x{order['qty']}\n"
+                        f"💰 Amount: {total} ETB\n"
+                        f"📍 Location: {order['location']}\n"
+                        f"👤 User: @{call.from_user.username or 'User'}",
                         reply_markup=markup,
                         parse_mode="HTML"
                     )
+                    db.active_delivery_msgs[user_id] = sent.message_id
+                
+                except Exception as e:
+                    print(f"Error notifying delivery {delivery_id}: {e}")
+    
+    except (ValueError, IndexError) as e:
+        print(f"Error in admin_accept_order: {e}")
+        bot.answer_callback_query(call.id, "❌ Error processing order.", show_alert=True)
 
-                    active_delivery_msgs[u_id] = sent.message_id
-
-                except Exception:
-                    continue
-
-    # -----------------------------------------------------
-    # ADMIN REJECTS ORDER
-    # -----------------------------------------------------
-
-    elif data[0] == "n":
-
-        if not admin_only(call.message):
-            bot.answer_callback_query(
-                call.id,
-                "❌ Admin only!",
-                show_alert=True
-            )
-            return
-
-        u_id = int(data[1])
-
-        order = orders_db.get(u_id)
-
-        if order:
-            order["status"] = "rejected"
-
+@bot.callback_query_handler(func=lambda call: call.data.startswith("n_"))
+def admin_reject_order(call):
+    """Handle admin rejecting order"""
+    if not is_admin(call.from_user.id):
         bot.answer_callback_query(
             call.id,
-            "❌ Order rejected."
+            "❌ Admin only!",
+            show_alert=True
         )
-
+        return
+    
+    try:
+        user_id = int(call.data.split("_")[1])
+        
+        order = db.orders_db.get(user_id)
+        if order:
+            order["status"] = "rejected"
+        
+        bot.answer_callback_query(call.id, "❌ Order rejected.")
+        
         try:
             bot.edit_message_reply_markup(
                 call.message.chat.id,
@@ -834,64 +830,62 @@ def handle_calls(call):
             )
         except Exception:
             pass
-
+        
         bot.send_message(
-            u_id,
-            "❌ <b>Sorry, your order was rejected or sold out.</b>",
+            user_id,
+            "❌ <b>Your order was rejected or sold out.</b>\n\n"
+            "Please try again later or contact admin.",
             parse_mode="HTML"
         )
+    
+    except (ValueError, IndexError):
+        pass
 
-    # -----------------------------------------------------
-    # DELIVERY ACCEPTS ORDER
-    # -----------------------------------------------------
-
-    elif data[0] == "t":
-
-        d_id = call.from_user.id
-
-        if d_id not in delivery_guys:
-            bot.answer_callback_query(
-                call.id,
-                "❌ You are not a delivery worker.",
-                show_alert=True
-            )
-            return
-
-        u_id = int(data[1])
-
-        order = orders_db.get(u_id)
-
-        if not order or order.get("status") != "accepted":
+@bot.callback_query_handler(func=lambda call: call.data.startswith("t_"))
+def delivery_accept_order(call):
+    """Handle delivery person accepting order"""
+    delivery_id = call.from_user.id
+    
+    if delivery_id not in db.delivery_guys:
+        bot.answer_callback_query(
+            call.id,
+            "❌ You are not registered as delivery person.",
+            show_alert=True
+        )
+        return
+    
+    try:
+        user_id = int(call.data.split("_")[1])
+        order = db.orders_db.get(user_id)
+        
+        if not order or order["status"] != "accepted":
             bot.answer_callback_query(
                 call.id,
                 "⚠️ Order unavailable.",
                 show_alert=True
             )
             return
-
-        if order.get("assigned_to") is not None:
+        
+        if order["assigned_to"] is not None:
             bot.answer_callback_query(
                 call.id,
-                "⚠️ Already assigned.",
+                "⚠️ Order already assigned to another driver.",
                 show_alert=True
             )
             return
-
-        order["assigned_to"] = d_id
+        
+        order["assigned_to"] = delivery_id
         order["status"] = "delivery"
-
-        bot.answer_callback_query(
-            call.id,
-            "✅ Delivery accepted!"
-        )
-
+        
+        bot.answer_callback_query(call.id, "✅ Delivery accepted!")
+        
         bot.send_message(
-            u_id,
-            "🚲 <b>Delivery accepted!</b>\n"
-            "Your order is on the way.",
+            user_id,
+            "🚲 <b>Delivery Accepted!</b>\n"
+            "Your order is on the way. 🛵",
             parse_mode="HTML"
         )
-
+        
         try:
             bot.edit_message_reply_markup(
                 call.message.chat.id,
@@ -900,66 +894,90 @@ def handle_calls(call):
             )
         except Exception:
             pass
+    
+    except (ValueError, IndexError):
+        pass
 
-    # -----------------------------------------------------
-    # ORDER FINISHED
-    # -----------------------------------------------------
-
-    elif data[0] == "finish":
-
-        u_id = int(data[1]) if len(data) > 1 else call.from_user.id
-
-        order = orders_db.get(u_id)
-
+@bot.callback_query_handler(func=lambda call: call.data.startswith("finish"))
+def mark_order_finished(call):
+    """Handle marking order as finished"""
+    try:
+        data = call.data.split("_")
+        if len(data) > 1:
+            user_id = int(data[1])
+        else:
+            user_id = call.from_user.id
+        
+        order = db.orders_db.get(user_id)
         if order:
             order["status"] = "finished"
-
-        bot.answer_callback_query(
-            call.id,
-            "✅ Order completed!"
-        )
-
+        
+        bot.answer_callback_query(call.id, "✅ Order completed!")
+        
         bot.send_message(
             call.from_user.id,
-            "✅ <b>Thank you!</b>\n"
-            "Your order has been completed.",
+            "✅ <b>Thank You!</b>\n\n"
+            "Your order has been completed successfully.\n"
+            "We appreciate your business! 🙏",
             parse_mode="HTML"
         )
-
+    
+    except (ValueError, IndexError):
+        pass
 
 # =========================================================
-# 11. VERCEL FLASK WEBHOOK ROUTES
+# 12. FLASK WEBHOOK ROUTES
 # =========================================================
 
 @app.route("/", defaults={"path": ""}, methods=["POST", "GET"])
 @app.route("/<path:path>", methods=["POST", "GET"])
-def catch_all(path):
-
+def webhook(path):
+    """Handle Telegram webhook"""
     if request.method == "POST":
-
         if request.is_json:
-
-            json_string = request.get_data().decode("utf-8")
-
-            update = telebot.types.Update.de_json(
-                json_string
-            )
-
-            bot.process_new_updates([update])
-
-            return "", 200
-
+            try:
+                json_data = request.get_data().decode("utf-8")
+                update = telebot.types.Update.de_json(json_data)
+                bot.process_new_updates([update])
+                return "", 200
+            except Exception as e:
+                print(f"Webhook error: {e}")
+                return "Error processing update", 400
+        
         return "Invalid content type", 400
+    
+    return "🤖 Arefa Bot is active and running!", 200
 
-    return "Bot is active and running via Webhook!", 200
-
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "bot_name": "Arefa Food Bot",
+        "users": len(db.all_users),
+        "orders": len(db.orders_db)
+    }, 200
 
 # =========================================================
-# 12. LOCAL RUN
+# 13. ERROR HANDLERS
+# =========================================================
+
+@bot.message_handler(func=lambda m: True)
+def handle_unknown(message):
+    """Handle unknown messages"""
+    if message.text and not message.text.startswith("/"):
+        bot.send_message(
+            message.chat.id,
+            "❌ <b>Command not recognized.</b>\n\n"
+            "Please use the main menu or /start to begin.",
+            parse_mode="HTML"
+        )
+
+# =========================================================
+# 14. MAIN EXECUTION
 # =========================================================
 
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000))
-    )
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Starting bot on port {port}...")
+    app.run(host="0.0.0.0", port=port, debug=False)
