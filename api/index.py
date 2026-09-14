@@ -754,7 +754,40 @@ def admin_accept_order(call):
             )
         except Exception:
             pass
-        
+
+
+        @bot.message_handler(commands=["remove_delivery"])
+def remove_delivery(message):
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "❌ Admin only.")
+        return
+
+    parts = message.text.split()
+
+    if len(parts) != 2:
+        bot.reply_to(
+            message,
+            "Usage:\n/remove_delivery USER_ID\n\nExample:\n/remove_delivery 123456789"
+        )
+        return
+
+    try:
+        delivery_id = int(parts[1])
+    except ValueError:
+        bot.reply_to(message, "❌ User ID must be a number.")
+        return
+
+    if delivery_id not in db.delivery_guys:
+        bot.reply_to(message, "❌ This user is not a delivery guy.")
+        return
+
+    db.delivery_guys.remove(delivery_id)
+
+    bot.reply_to(
+        message,
+        f"✅ Delivery guy removed successfully.\n\nUser ID: {delivery_id}"
+    )
+    
         # Handle based on service type
         if order["usage"] == "Dine-in":
             markup = types.InlineKeyboardMarkup()
