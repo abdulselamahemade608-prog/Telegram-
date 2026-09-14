@@ -5,7 +5,7 @@ import datetime
 import time
 
 # --- 1. CONFIGURATION ---
-TOKEN = "8780297991:AAG-gdcWtv8QzxqE7lpM9A2tawwK6UAGDQo"
+TOKEN = "8934567176:AAGjSUFmzUzsUznep9eynoYkGYsk0GAGj9I"
 ADMIN_IDS = [7975950709, 7725001366] 
 CHANNELS = ["@Felafel_arafa"]
 
