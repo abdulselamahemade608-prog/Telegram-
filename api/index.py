@@ -170,4 +170,26 @@ def webhook():
 @app.route('/', methods=['GET'])
 def index():
     return 'Bot is active and running via Webhook!'
+
+
+
+
+# --- VERCEL FLASK WEBHOOK ROUTES ---
+@app.route('/', methods=['POST'])
+@app.route('/api', methods=['POST'])
+@app.route('/api/index', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    return 'Forbidden', 403
+
+@app.route('/', methods=['GET'])
+@app.route('/api', methods=['GET'])
+@app.route('/api/index', methods=['GET'])
+def index():
+    return 'Bot is active and running via Webhook!'
+    
       
