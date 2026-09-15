@@ -106,7 +106,7 @@ db = Database()
 class Buttons:
     """Centralized button labels"""
     # Order types
-    NORMAL = "✅ Normal Ertib"
+    NORMAL = "✅ Normal By felafl Ertib"
     SPECIAL = "✅ Special Ertib"
     SUPER = "✅ Super Ertib"
     
