@@ -16,7 +16,7 @@ from telebot import types
 # =========================================================
 
 TOKEN = os.environ.get("BOT_TOKEN", "PASTE_YOUR_BOT_TOKEN_HERE")
-ADMIN_IDS = [7725001366]
+ADMIN_IDS = [7725001366, 7948454166]
 CHANNELS = ["@felafel_arafa"]
 CHANNEL_URL = "https://t.me/Felafel_arafa"
 
